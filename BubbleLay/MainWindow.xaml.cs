@@ -21,6 +21,13 @@ namespace BubbleDisplay
         // ── WebView2 Init ─────────────────────────────────────────
         private async void InitWebView()
         {
+            // Guard for OS version before touching WebView2/CoreWebView2 APIs
+            if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
+            {
+                // WebView2 unsupported on this OS — skip initialization
+                return;
+            }
+
             await webView.EnsureCoreWebView2Async(null);
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -76,13 +83,17 @@ namespace BubbleDisplay
             string safeName = name.Replace("\\", "\\\\").Replace("'", "\\'");
 
             string js = $@"
-                if (typeof showBubble === 'function') {{
-                    showBubble('{safeText}', '{safeName}', {(showName ? "true" : "false")}, {speed});
-                }}
-            ";
+        if (typeof showBubble === 'function') {{
+            showBubble('{safeText}', '{safeName}', {(showName ? "true" : "false")}, {speed});
+        }}
+    ";
 
-            try { await webView.CoreWebView2.ExecuteScriptAsync(js); }
-            catch { /* WebView not ready */ }
+            // Only call WebView2 script execution on supported Windows versions and if CoreWebView2 is ready
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) && webView.CoreWebView2 != null)
+            {
+                try { await webView.CoreWebView2.ExecuteScriptAsync(js); }
+                catch { /* WebView not ready or execution failed */ }
+            }
 
             txtMessage.Clear();
             txtMessage.Focus();
@@ -91,13 +102,16 @@ namespace BubbleDisplay
 
         private async void ClearBubbles()
         {
-            try
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) && webView.CoreWebView2 != null)
             {
-                await webView.CoreWebView2.ExecuteScriptAsync(
-                    "document.querySelectorAll('.bubble-wrap').forEach(b => b.remove());"
-                );
+                try
+                {
+                    await webView.CoreWebView2.ExecuteScriptAsync(
+                        "document.querySelectorAll('.bubble-wrap').forEach(b => b.remove());"
+                    );
+                }
+                catch { }
             }
-            catch { }
             ShowStatus("cleared");
         }
 
