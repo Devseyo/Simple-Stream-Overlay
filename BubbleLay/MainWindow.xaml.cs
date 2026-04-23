@@ -18,13 +18,13 @@ namespace BubbleDisplay
             InitWebView();
         }
 
-        // ── WebView2 Init ─────────────────────────────────────────
+        // WebView2 Init 
         private async void InitWebView()
         {
             // Guard for OS version before touching WebView2/CoreWebView2 APIs
             if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
             {
-                // WebView2 unsupported on this OS — skip initialization
+                // WebView2 unsupported on this OS skip initialization
                 return;
             }
 
@@ -37,7 +37,7 @@ namespace BubbleDisplay
             webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
         }
 
-        // ── Event Handlers ────────────────────────────────────────
+        // Event Handlers
         private void TxtMessage_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (lblCharCount == null) return;
@@ -69,7 +69,7 @@ namespace BubbleDisplay
                 txtName.IsEnabled = chkShowName.IsChecked == true;
         }
 
-        // ── Actions ───────────────────────────────────────────────
+        // Actions
         private async void SendBubble()
         {
             string text = txtMessage.Text.Trim();
@@ -122,7 +122,7 @@ namespace BubbleDisplay
             if (lblStatus.Text == msg) lblStatus.Text = "";
         }
 
-        // ── Embedded HTML ─────────────────────────────────────────
+        // Embedded HTML
         private string GetDisplayHtml() => @"<!DOCTYPE html>
 <html lang='en'>
 <head>
