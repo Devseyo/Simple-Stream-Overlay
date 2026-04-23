@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,29 +13,43 @@ namespace BubbleDisplay
     {
         private const int MAX_CHARS = 120;
 
+        // Queue
+        private readonly Queue<(string text, string name, bool showName, int speed)> _messageQueue = new();
+        private bool _isProcessingQueue = false;
+
+        // Bubble limit (mirrors JS side)
+        private int _bubbleLimit = 3;
+
         public MainWindow()
         {
             InitializeComponent();
             InitWebView();
         }
 
-        // WebView2 Init 
+        //  WebView2 Init 
         private async void InitWebView()
         {
-            // Guard for OS version before touching WebView2/CoreWebView2 APIs
             if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
-            {
-                // WebView2 unsupported on this OS skip initialization
                 return;
-            }
 
             await webView.EnsureCoreWebView2Async(null);
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
 
+            // Listen for JS callbacks (bubble finished / slot freed)
+            webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+
             string htmlPath = Path.Combine(Path.GetTempPath(), "bubble_display.html");
             File.WriteAllText(htmlPath, GetDisplayHtml());
             webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+        }
+
+        // JS > C# callback: a bubble slot was freed
+        private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            string msg = e.TryGetWebMessageAsString();
+            if (msg == "slot_freed")
+                Dispatcher.Invoke(TryDequeueNext);
         }
 
         // Event Handlers
@@ -43,25 +58,20 @@ namespace BubbleDisplay
             if (lblCharCount == null) return;
             int len = txtMessage.Text.Length;
             lblCharCount.Text = $"{len}/{MAX_CHARS}";
-            if (len >= MAX_CHARS)
-                lblCharCount.Foreground = new SolidColorBrush(Color.FromRgb(122, 26, 26));
-            else if (len >= MAX_CHARS * 0.8)
-                lblCharCount.Foreground = new SolidColorBrush(Color.FromRgb(122, 80, 16));
-            else
-                lblCharCount.Foreground = new SolidColorBrush(Color.FromRgb(58, 58, 58));
+            lblCharCount.Foreground = len >= MAX_CHARS
+                ? new SolidColorBrush(Color.FromRgb(122, 26, 26))
+                : len >= MAX_CHARS * 0.8
+                    ? new SolidColorBrush(Color.FromRgb(122, 80, 16))
+                    : new SolidColorBrush(Color.FromRgb(58, 58, 58));
         }
 
         private void TxtMessage_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Enter)
-            {
-                e.Handled = true;
-                SendBubble();
-            }
+            if (e.Key == Key.Enter) { e.Handled = true; EnqueueBubble(); }
         }
 
-        private void BtnSend_Click(object sender, RoutedEventArgs e) => SendBubble();
-        private void BtnClear_Click(object sender, RoutedEventArgs e) => ClearBubbles();
+        private void BtnSend_Click(object sender, RoutedEventArgs e) => EnqueueBubble();
+        private void BtnClear_Click(object sender, RoutedEventArgs e) => ClearAll();
 
         private void ChkShowName_Changed(object sender, RoutedEventArgs e)
         {
@@ -69,51 +79,92 @@ namespace BubbleDisplay
                 txtName.IsEnabled = chkShowName.IsChecked == true;
         }
 
-        // Actions
-        private async void SendBubble()
+        private void SldBubbleLimit_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            _bubbleLimit = (int)sldBubbleLimit.Value;
+            if (lblBubbleLimit != null)
+                lblBubbleLimit.Text = _bubbleLimit.ToString();
+
+            // Push new limit into JS immediately
+            _ = ExecJsAsync($"setBubbleLimit({_bubbleLimit});");
+        }
+
+        // Queue logic
+
+        /// <summary>
+        /// Called when the user hits SEND. Adds the message to the queue,
+        /// then tries to show it immediately if a slot is free.
+        /// </summary>
+        private void EnqueueBubble()
         {
             string text = txtMessage.Text.Trim();
             if (string.IsNullOrEmpty(text)) return;
 
-            string name = chkShowName.IsChecked == true ? txtName.Text.Trim() : "";
-            bool showName = chkShowName.IsChecked == true && !string.IsNullOrEmpty(name);
-            int speed = (int)sldSpeed.Value;
+            string name     = chkShowName.IsChecked == true ? txtName.Text.Trim() : "";
+            bool   showName = chkShowName.IsChecked == true && !string.IsNullOrEmpty(name);
+            int    speed    = (int)sldSpeed.Value;
 
-            string safeText = text.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n");
-            string safeName = name.Replace("\\", "\\\\").Replace("'", "\\'");
-
-            string js = $@"
-        if (typeof showBubble === 'function') {{
-            showBubble('{safeText}', '{safeName}', {(showName ? "true" : "false")}, {speed});
-        }}
-    ";
-
-            // Only call WebView2 script execution on supported Windows versions and if CoreWebView2 is ready
-            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) && webView.CoreWebView2 != null)
-            {
-                try { await webView.CoreWebView2.ExecuteScriptAsync(js); }
-                catch { /* WebView not ready or execution failed */ }
-            }
-
+            _messageQueue.Enqueue((text, name, showName, speed));
             txtMessage.Clear();
             txtMessage.Focus();
+
+            UpdateQueueLabel();
+            TryDequeueNext();
+        }
+
+        /// <summary>
+        /// Fires the next queued message if the JS side has a free slot.
+        /// The JS side tracks its own active count and answers via postMessage.
+        /// </summary>
+        private async void TryDequeueNext()
+        {
+            if (_messageQueue.Count == 0) return;
+
+            // Ask JS: do we have a free slot right now?
+            string result = await ExecJsAsync("hasFreeSlot()");   // returns "true" or "false"
+            if (result != "\"true\"" && result != "true") return; // still full
+
+            if (_messageQueue.Count == 0) return; // drained while awaiting
+
+            var (text, name, showName, speed) = _messageQueue.Dequeue();
+            UpdateQueueLabel();
+
+            string safeText = Escape(text);
+            string safeName = Escape(name);
+            string js = $"showBubble('{safeText}', '{safeName}', {(showName ? "true" : "false")}, {speed});";
+            await ExecJsAsync(js);
+
             ShowStatus("sent ✓");
         }
 
-        private async void ClearBubbles()
+        private void UpdateQueueLabel()
         {
-            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) && webView.CoreWebView2 != null)
-            {
-                try
-                {
-                    await webView.CoreWebView2.ExecuteScriptAsync(
-                        "document.querySelectorAll('.bubble-wrap').forEach(b => b.remove());"
-                    );
-                }
-                catch { }
-            }
+            if (lblQueue == null) return;
+            lblQueue.Text = _messageQueue.Count > 0
+                ? $"queued: {_messageQueue.Count}"
+                : "";
+        }
+
+        // Clear
+        private async void ClearAll()
+        {
+            _messageQueue.Clear();
+            UpdateQueueLabel();
+            await ExecJsAsync("clearBubbles();");
             ShowStatus("cleared");
         }
+
+        // Helpers
+        private async System.Threading.Tasks.Task<string> ExecJsAsync(string js)
+        {
+            if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) || webView.CoreWebView2 == null)
+                return "";
+            try   { return await webView.CoreWebView2.ExecuteScriptAsync(js); }
+            catch { return ""; }
+        }
+
+        private static string Escape(string s) =>
+            s.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n");
 
         private async void ShowStatus(string msg)
         {
@@ -200,7 +251,7 @@ namespace BubbleDisplay
   .typing-box::before {
     content: ''; position: absolute; bottom: calc(-6px * var(--s)); left: calc(17px * var(--s));
     border-left: calc(6px * var(--s)) solid transparent;
-    border-top: calc(8px * var(--s)) solid #f5e6c8; z-index: 1;
+    border-top: calc(8px * var(--6px)) solid #f5e6c8; z-index: 1;
   }
   .dot {
     width: calc(6px * var(--s)); height: calc(6px * var(--s));
@@ -225,24 +276,37 @@ namespace BubbleDisplay
   </div>
 </div>
 <script>
-  const app = document.getElementById('app');
-  const typingWrap = document.getElementById('typing-wrap');
+  const app          = document.getElementById('app');
+  const typingWrap   = document.getElementById('typing-wrap');
   const typingNameEl = document.getElementById('typing-name');
+
+  // ── Bubble limit (kept in sync with C# slider) ──────────────────────────
+  let bubbleLimit  = 3;
+  let activeBubbles = 0;
+
+  function setBubbleLimit(n) { bubbleLimit = n; }
+  function hasFreeSlot()     { return activeBubbles < bubbleLimit; }
+
+  // Helpers 
   function ensureTypingLast() { app.appendChild(typingWrap); }
-  let typingTimeout = null;
+
   function updateScale() {
     const s = Math.max(0.3, Math.min(3, window.innerWidth / 400));
     app.style.setProperty('--s', s.toFixed(3));
   }
   window.addEventListener('resize', updateScale);
   updateScale();
+
   function typeText(el, text, speed, onDone) {
     let i = 0;
     const iv = setInterval(() => {
-      el.textContent += text[i]; i++;
+      el.textContent += text[i++];
       if (i >= text.length) { clearInterval(iv); if (onDone) onDone(); }
     }, speed || 35);
   }
+
+  // Typing indicator
+  let typingTimeout = null;
   function showTyping(name, showName) {
     typingNameEl.textContent = name || '';
     typingNameEl.style.display = showName ? 'block' : 'none';
@@ -255,35 +319,63 @@ namespace BubbleDisplay
     clearTimeout(typingTimeout);
     typingWrap.classList.remove('visible');
   }
+
+  // Show bubble
+  // No longer enforces a hard cap here — C# queue ensures we only call
+  // showBubble() when a slot is free. We still remove the oldest if somehow
+  // over limit (safety net).
   function showBubble(text, name, showName, speed) {
     hideTyping();
+
+    // Safety net: evict oldest if at hard limit
     const all = app.querySelectorAll('.bubble-wrap');
-    if (all.length >= 3) {
+    if (all.length >= bubbleLimit) {
       const oldest = all[0];
       oldest.classList.add('fading');
+      activeBubbles = Math.max(0, activeBubbles - 1);
       setTimeout(() => oldest.remove(), 600);
     }
+
+    activeBubbles++;
+
     const wrap = document.createElement('div');
     wrap.className = 'bubble-wrap';
+
     if (showName) {
       const nameEl = document.createElement('div');
       nameEl.className = 'bubble-name';
       nameEl.textContent = name;
       wrap.appendChild(nameEl);
     }
-    const box = document.createElement('div');
+
+    const box    = document.createElement('div');
     box.className = 'bubble-box';
     const textEl = document.createElement('span');
     textEl.className = 'bubble-text';
     box.appendChild(textEl);
     wrap.appendChild(box);
     app.insertBefore(wrap, typingWrap);
+
     typeText(textEl, text, speed, () => {
       setTimeout(() => {
         wrap.classList.add('fading');
-        setTimeout(() => wrap.remove(), 600);
+        setTimeout(() => {
+          wrap.remove();
+          activeBubbles = Math.max(0, activeBubbles - 1);
+          // Notify C# that a slot opened up
+          if (window.chrome && window.chrome.webview)
+            window.chrome.webview.postMessage('slot_freed');
+        }, 600);
       }, 5000);
     });
+  }
+
+  // Clear all 
+  function clearBubbles() {
+    document.querySelectorAll('.bubble-wrap').forEach(b => b.remove());
+    activeBubbles = 0;
+    if (window.chrome && window.chrome.webview)
+      window.chrome.webview.postMessage('slot_freed');
   }
 </script>
 </body>
