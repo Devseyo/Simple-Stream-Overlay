@@ -1,4 +1,4 @@
-﻿<Window x:Class="BubbleDisplay.MainWindow"
+<Window x:Class="BubbleDisplay.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
@@ -87,6 +87,42 @@
                         TickFrequency="10"
                         Background="#111111"
                         Margin="0,0,0,12"/>
+
+                <!-- Divider -->
+                <Rectangle Height="1" Fill="#222222" Margin="0,0,0,10"/>
+
+                <!-- Bubble Limit -->
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="MAX BUBBLES"
+                               FontFamily="Consolas" FontSize="8"
+                               Foreground="#555555" Grid.Column="0"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="lblBubbleLimit"
+                               Text="3"
+                               FontFamily="Consolas" FontSize="8"
+                               Foreground="#888888" Grid.Column="1"
+                               VerticalAlignment="Center"/>
+                </Grid>
+
+                <Slider x:Name="sldBubbleLimit"
+                        Minimum="1" Maximum="5" Value="3"
+                        TickFrequency="1" IsSnapToTickEnabled="True"
+                        TickPlacement="BottomRight"
+                        Background="#111111"
+                        Margin="0,0,0,4"
+                        ValueChanged="SldBubbleLimit_ValueChanged"/>
+
+                <!-- Queue status -->
+                <TextBlock x:Name="lblQueue"
+                           Text=""
+                           FontFamily="Consolas" FontSize="8"
+                           Foreground="#3A6A3A"
+                           HorizontalAlignment="Right"
+                           Margin="0,0,0,12"/>
 
                 <!-- Divider -->
                 <Rectangle Height="1" Fill="#222222" Margin="0,0,0,10"/>
