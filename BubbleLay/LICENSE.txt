@@ -1,0 +1,7 @@
+BubbleLay - Simple Stream Overlay
+Copyright (c) 2026 Seyo
+
+This software is provided free of charge for personal and streaming use.
+You may not redistribute or sell this software without permission.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
